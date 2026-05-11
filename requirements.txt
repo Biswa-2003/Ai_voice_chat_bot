@@ -1,0 +1,27 @@
+# LiveKit framework
+livekit>=0.17
+livekit-agents>=0.8
+livekit-plugins-openai>=0.8
+livekit-plugins-deepgram>=0.6
+livekit-plugins-elevenlabs>=0.6
+livekit-plugins-silero>=0.6
+
+# LLM / Language
+openai>=1.30
+
+# Language detection
+langdetect>=1.0.9
+
+# Configuration
+python-dotenv>=1.0
+pydantic>=2.0
+pyyaml>=6.0
+
+# Token server
+fastapi>=0.110
+uvicorn[standard]>=0.29
+aiohttp>=3.9
+
+# Testing
+pytest>=8.0
+pytest-asyncio>=0.23
