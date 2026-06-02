@@ -24,22 +24,16 @@
       max-width: 520px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 14px;
     }
 
     /* ── Header ── */
-    .header {
-      text-align: center;
-    }
+    .header { text-align: center; }
     .header h1 { font-size: 1.5rem; color: #a78bfa; font-weight: 700; }
     .header p  { font-size: 0.82rem; color: #666; margin-top: 3px; }
 
     /* ── Scenario pills ── */
-    .scenarios {
-      display: flex;
-      gap: 8px;
-      justify-content: center;
-    }
+    .scenarios { display: flex; gap: 8px; justify-content: center; }
     .scenario-btn {
       padding: 5px 18px;
       border-radius: 20px;
@@ -68,13 +62,13 @@
       transition: box-shadow 0.3s, transform 0.3s;
       user-select: none;
     }
-    .orb.idle    { box-shadow: 0 0 0 0 transparent; }
+    .orb.idle     { box-shadow: 0 0 0 0 transparent; }
     .orb.listening {
       box-shadow: 0 0 0 12px rgba(124,58,237,0.25), 0 0 0 24px rgba(124,58,237,0.1);
       animation: breathe 2s ease-in-out infinite;
     }
     .orb.speaking {
-      box-shadow: 0 0 0 16px rgba(167,139,250,0.3), 0 0 40px rgba(167,139,250,0.5);
+      box-shadow: 0 0 0 16px rgba(52,211,153,0.25), 0 0 40px rgba(52,211,153,0.35);
       animation: pulse 0.8s ease-in-out infinite;
     }
     @keyframes breathe {
@@ -84,6 +78,31 @@
     @keyframes pulse {
       0%,100% { transform: scale(1); }
       50%      { transform: scale(1.08); }
+    }
+
+    /* ── Frequency visualizer ── */
+    .viz-wrap {
+      position: relative;
+      height: 64px;
+      display: flex;
+      align-items: flex-end;
+      overflow: hidden;
+    }
+    #viz {
+      width: 100%;
+      height: 64px;
+      display: block;
+      border-radius: 10px;
+    }
+    .viz-label {
+      position: absolute;
+      bottom: 6px;
+      right: 10px;
+      font-size: 0.6rem;
+      color: #333;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      pointer-events: none;
     }
 
     /* ── Status line ── */
@@ -108,7 +127,7 @@
       cursor: pointer;
       transition: opacity 0.18s, transform 0.1s;
     }
-    .btn:active { transform: scale(0.97); }
+    .btn:active   { transform: scale(0.97); }
     .btn:disabled { opacity: 0.35; cursor: default; }
     #connectBtn    { background: linear-gradient(135deg,#7c3aed,#4f46e5); color:#fff; }
     #disconnectBtn { background: transparent; border: 1px solid #f87171; color: #f87171; display:none; }
@@ -120,18 +139,14 @@
       border: 1px solid #1e1e3a;
       border-radius: 12px;
       padding: 12px;
-      max-height: 240px;
+      max-height: 220px;
       overflow-y: auto;
       display: none;
       scroll-behavior: smooth;
     }
-    .bubble {
-      display: flex;
-      flex-direction: column;
-      margin-bottom: 10px;
-    }
-    .bubble.user  { align-items: flex-end; }
-    .bubble.bot   { align-items: flex-start; }
+    .bubble { display: flex; flex-direction: column; margin-bottom: 10px; }
+    .bubble.user { align-items: flex-end; }
+    .bubble.bot  { align-items: flex-start; }
     .bubble-inner {
       max-width: 85%;
       padding: 8px 12px;
@@ -139,14 +154,9 @@
       font-size: 0.83rem;
       line-height: 1.5;
     }
-    .bubble.user  .bubble-inner { background: #312e81; color: #c4b5fd; border-bottom-right-radius: 3px; }
-    .bubble.bot   .bubble-inner { background: #1a1a2e; color: #e2e2f0; border-bottom-left-radius: 3px; }
-    .bubble-meta {
-      font-size: 0.68rem;
-      color: #555;
-      margin-top: 3px;
-      padding: 0 4px;
-    }
+    .bubble.user .bubble-inner { background: #312e81; color: #c4b5fd; border-bottom-right-radius: 3px; }
+    .bubble.bot  .bubble-inner { background: #1a1a2e; color: #e2e2f0; border-bottom-left-radius: 3px; }
+    .bubble-meta { font-size: 0.68rem; color: #555; margin-top: 3px; padding: 0 4px; }
 
     /* ── Lang badge ── */
     .lang-badge {
@@ -169,12 +179,18 @@
   </div>
 
   <div class="scenarios">
-    <button class="scenario-btn active" data-s="presale"  onclick="selectScenario(this)">Presale</button>
-    <button class="scenario-btn"        data-s="sales"    onclick="selectScenario(this)">Sales</button>
+    <button class="scenario-btn active" data-s="presale"   onclick="selectScenario(this)">Presale</button>
+    <button class="scenario-btn"        data-s="sales"     onclick="selectScenario(this)">Sales</button>
     <button class="scenario-btn"        data-s="marketing" onclick="selectScenario(this)">Marketing</button>
   </div>
 
   <div class="orb-wrap"><div class="orb idle" id="orb">🎙️</div></div>
+
+  <!-- Frequency visualizer canvas -->
+  <div class="viz-wrap">
+    <canvas id="viz"></canvas>
+    <span class="viz-label" id="vizLabel">frequency</span>
+  </div>
 
   <div id="status">Select a scenario and click Connect</div>
 
@@ -188,7 +204,7 @@
 </div>
 
 <script>
-// ── State ────────────────────────────────────────────────────────────────────
+// ── State ─────────────────────────────────────────────────────────────────────
 const SERVER = window.location.origin.replace(/^http/, 'ws');
 let ws           = null;
 let mediaRec     = null;
@@ -200,36 +216,165 @@ let audioQueue   = [];
 let audioCtx     = null;
 let scenario     = 'presale';
 
-// ── Scenario selection ───────────────────────────────────────────────────────
+// ── Visualizer state ──────────────────────────────────────────────────────────
+let micAnalyser  = null;   // AnalyserNode for mic input
+let botAnalyser  = null;   // AnalyserNode for bot audio output
+let vizMode      = 'idle'; // 'idle' | 'listening' | 'speaking'
+let vizRafId     = null;
+let smoothBars   = null;   // smoothed bar heights for animation
+
+const canvas = document.getElementById('viz');
+const ctx2d  = canvas.getContext('2d');
+const BAR_COUNT = 52;
+
+function initCanvas() {
+  const dpr  = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width  = rect.width  * dpr;
+  canvas.height = rect.height * dpr;
+  ctx2d.scale(dpr, dpr);
+  smoothBars = new Float32Array(BAR_COUNT).fill(2);
+}
+
+window.addEventListener('resize', () => { if (vizRafId) { initCanvas(); } });
+
+function startViz() {
+  initCanvas();
+  if (vizRafId) cancelAnimationFrame(vizRafId);
+  drawFrame();
+}
+
+function stopViz() {
+  if (vizRafId) cancelAnimationFrame(vizRafId);
+  vizRafId = null;
+  ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawFrame() {
+  vizRafId = requestAnimationFrame(drawFrame);
+
+  const W = canvas.getBoundingClientRect().width;
+  const H = canvas.getBoundingClientRect().height;
+  ctx2d.clearRect(0, 0, W * (window.devicePixelRatio||1), H * (window.devicePixelRatio||1));
+
+  // ── Read frequency data ──
+  const raw = new Float32Array(BAR_COUNT);
+
+  if (vizMode === 'listening' && micAnalyser && !muted) {
+    const buf = new Uint8Array(micAnalyser.frequencyBinCount);
+    micAnalyser.getByteFrequencyData(buf);
+    const step = Math.floor(buf.length / BAR_COUNT);
+    for (let i = 0; i < BAR_COUNT; i++) raw[i] = buf[i * step];
+  } else if (vizMode === 'speaking' && botAnalyser) {
+    const buf = new Uint8Array(botAnalyser.frequencyBinCount);
+    botAnalyser.getByteFrequencyData(buf);
+    const step = Math.floor(buf.length / BAR_COUNT);
+    for (let i = 0; i < BAR_COUNT; i++) raw[i] = buf[i * step];
+  } else if (vizMode === 'idle') {
+    // Faint idle shimmer
+    const t = Date.now() / 1200;
+    for (let i = 0; i < BAR_COUNT; i++) {
+      raw[i] = 4 + Math.sin(t + i * 0.4) * 2 + Math.sin(t * 1.7 + i * 0.8);
+    }
+  } else {
+    // Muted or no data — flat
+    for (let i = 0; i < BAR_COUNT; i++) raw[i] = 2;
+  }
+
+  // ── Smooth bars (exponential moving average) ──
+  const alpha = vizMode === 'idle' ? 0.12 : 0.35;
+  for (let i = 0; i < BAR_COUNT; i++) {
+    smoothBars[i] = smoothBars[i] * (1 - alpha) + raw[i] * alpha;
+  }
+
+  // ── Draw bars ──
+  const gap   = 2;
+  const barW  = (W - (BAR_COUNT - 1) * gap) / BAR_COUNT;
+
+  for (let i = 0; i < BAR_COUNT; i++) {
+    const norm = Math.min(1, smoothBars[i] / 200);
+    const barH = Math.max(2, norm * H * 0.92);
+    const x    = i * (barW + gap);
+    const y    = H - barH;
+
+    // Color + glow by mode
+    let r, g, b;
+    if (vizMode === 'listening') {
+      // Purple → violet
+      r = Math.round(124 + norm * 43);
+      g = Math.round(58  + norm * 30);
+      b = Math.round(237);
+    } else if (vizMode === 'speaking') {
+      // Teal → green
+      r = Math.round(16  + norm * 36);
+      g = Math.round(185 + norm * 26);
+      b = Math.round(129 + norm * 24);
+    } else {
+      // Idle — dim blue-grey
+      r = 55; g = 55; b = 100;
+    }
+
+    const alpha2 = vizMode === 'idle' ? 0.22 : 0.55 + norm * 0.45;
+    ctx2d.fillStyle = `rgba(${r},${g},${b},${alpha2})`;
+
+    // Rounded top corners
+    const radius = Math.min(barW / 2, 3);
+    ctx2d.beginPath();
+    if (ctx2d.roundRect) {
+      ctx2d.roundRect(x, y, barW, barH, [radius, radius, 0, 0]);
+    } else {
+      ctx2d.rect(x, y, barW, barH);
+    }
+    ctx2d.fill();
+
+    // Glow highlight on tall bars
+    if (norm > 0.5 && vizMode !== 'idle') {
+      ctx2d.fillStyle = `rgba(${r},${g},${b},${(norm - 0.5) * 0.4})`;
+      ctx2d.fillRect(x, y - 2, barW, 3);
+    }
+  }
+}
+
+// Draw idle animation immediately on page load
+initCanvas();
+vizMode = 'idle';
+startViz();
+
+// ── Scenario selection ────────────────────────────────────────────────────────
 function selectScenario(btn) {
-  if (ws) return; // locked while connected
+  if (ws) return;
   scenario = btn.dataset.s;
   document.querySelectorAll('.scenario-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
 }
 
-// ── Status helpers ───────────────────────────────────────────────────────────
+// ── Status helpers ────────────────────────────────────────────────────────────
 function setStatus(msg, cls = '') {
   const el = document.getElementById('status');
   el.textContent = msg;
   el.className = cls;
 }
+
 function setOrb(state) {
   const orb = document.getElementById('orb');
   orb.className = `orb ${state}`;
   orb.textContent = state === 'speaking' ? '🔊' : '🎙️';
+  // Sync visualizer mode
+  if      (state === 'listening') { vizMode = 'listening'; document.getElementById('vizLabel').textContent = 'you'; }
+  else if (state === 'speaking')  { vizMode = 'speaking';  document.getElementById('vizLabel').textContent = 'priya'; }
+  else                            { vizMode = 'idle';       document.getElementById('vizLabel').textContent = 'frequency'; }
 }
 
-// ── Connect ──────────────────────────────────────────────────────────────────
+// ── Connect ───────────────────────────────────────────────────────────────────
 async function connect() {
   document.getElementById('connectBtn').disabled = true;
   setStatus('Requesting microphone...');
 
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    video: false
-  });
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false
+    });
   } catch (e) {
     setStatus('Microphone access denied.', 'err');
     document.getElementById('connectBtn').disabled = false;
@@ -238,14 +383,27 @@ async function connect() {
 
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
+  // ── Mic analyser (does NOT connect to destination — avoids feedback) ──
+  micAnalyser = audioCtx.createAnalyser();
+  micAnalyser.fftSize = 512;
+  micAnalyser.smoothingTimeConstant = 0.75;
+  const micSrc = audioCtx.createMediaStreamSource(micStream);
+  micSrc.connect(micAnalyser);
+
+  // ── Bot analyser (sits between BufferSource and speakers) ──
+  botAnalyser = audioCtx.createAnalyser();
+  botAnalyser.fftSize = 512;
+  botAnalyser.smoothingTimeConstant = 0.80;
+  botAnalyser.connect(audioCtx.destination);
+
   ws = new WebSocket(`${SERVER}/ws/${scenario}`);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
     setStatus('Connected — speak now!', 'on');
     setOrb('listening');
-    document.getElementById('connectBtn').style.display = 'none';
-    document.getElementById('muteBtn').style.display = 'block';
+    document.getElementById('connectBtn').style.display    = 'none';
+    document.getElementById('muteBtn').style.display       = 'block';
     document.getElementById('disconnectBtn').style.display = 'block';
     document.querySelectorAll('.scenario-btn').forEach(b => b.disabled = true);
     startMic();
@@ -253,7 +411,6 @@ async function connect() {
 
   ws.onmessage = async (event) => {
     if (event.data instanceof ArrayBuffer) {
-      // Bot audio
       enqueueAudio(event.data);
     } else {
       const msg = JSON.parse(event.data);
@@ -265,31 +422,31 @@ async function connect() {
   ws.onclose = () => onDisconnected();
 }
 
-// ── Mic ──────────────────────────────────────────────────────────────────────
+// ── Mic ───────────────────────────────────────────────────────────────────────
 function startMic() {
   const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
     ? 'audio/webm;codecs=opus'
     : 'audio/webm';
   mediaRec = new MediaRecorder(micStream, { mimeType });
   mediaRec.ondataavailable = (e) => {
-    // Always send audio — echoCancellation handles bot audio pickup.
-    // Stopping during bot speech causes Deepgram to time out and disconnect.
     if (e.data.size > 0 && ws?.readyState === WebSocket.OPEN && !muted)
       ws.send(e.data);
   };
-  mediaRec.start(100); // 100 ms chunks
+  mediaRec.start(100);
 }
 
 function toggleMute() {
   muted = !muted;
   const btn = document.getElementById('muteBtn');
-  btn.textContent = muted ? 'Unmute' : 'Mute';
+  btn.textContent  = muted ? 'Unmute' : 'Mute';
   btn.style.color  = muted ? '#f87171' : '#aaa';
   btn.style.borderColor = muted ? '#f87171' : '#555';
   setStatus(muted ? 'Microphone muted' : 'Listening…', muted ? 'err' : 'on');
+  if (muted && !botSpeaking) vizMode = 'idle';
+  else if (!muted && !botSpeaking) vizMode = 'listening';
 }
 
-// ── Disconnect ───────────────────────────────────────────────────────────────
+// ── Disconnect ────────────────────────────────────────────────────────────────
 function disconnect() {
   ws?.close();
   cleanup();
@@ -299,9 +456,9 @@ function onDisconnected() {
   cleanup();
   setStatus('Disconnected');
   setOrb('idle');
-  document.getElementById('connectBtn').style.display = 'block';
-  document.getElementById('connectBtn').disabled = false;
-  document.getElementById('muteBtn').style.display = 'none';
+  document.getElementById('connectBtn').style.display    = 'block';
+  document.getElementById('connectBtn').disabled         = false;
+  document.getElementById('muteBtn').style.display       = 'none';
   document.getElementById('disconnectBtn').style.display = 'none';
   document.querySelectorAll('.scenario-btn').forEach(b => b.disabled = false);
 }
@@ -309,11 +466,16 @@ function onDisconnected() {
 function cleanup() {
   mediaRec?.stop();
   micStream?.getTracks().forEach(t => t.stop());
-  mediaRec = null; micStream = null;
-  audioQueue = []; botSpeaking = false;
+  mediaRec   = null;
+  micStream  = null;
+  micAnalyser = null;
+  botAnalyser = null;
+  audioQueue = [];
+  botSpeaking = false;
+  vizMode = 'idle';
 }
 
-// ── Message handler ──────────────────────────────────────────────────────────
+// ── Message handler ───────────────────────────────────────────────────────────
 function handleMessage(msg) {
   if (msg.type === 'user_text') {
     addBubble('user', msg.text, msg.lang);
@@ -327,7 +489,7 @@ function handleMessage(msg) {
   }
 }
 
-// ── Audio queue ──────────────────────────────────────────────────────────────
+// ── Audio queue ───────────────────────────────────────────────────────────────
 function enqueueAudio(buffer) {
   audioQueue.push(buffer);
   if (!botSpeaking) playNext();
@@ -336,31 +498,34 @@ function enqueueAudio(buffer) {
 async function playNext() {
   if (!audioQueue.length) {
     isPlayingAudio = false;
-    botSpeaking = false;
+    botSpeaking    = false;
     setOrb('listening');
     setStatus('Listening…', 'on');
     return;
   }
   isPlayingAudio = true;
-  botSpeaking = true;
+  botSpeaking    = true;
   const buf = audioQueue.shift();
   try {
-    // Resume context if browser suspended it (autoplay policy)
     if (audioCtx.state === 'suspended') await audioCtx.resume();
-    // decodeAudioData detaches the buffer — use slice to keep original
     const audioBuf = await audioCtx.decodeAudioData(buf.slice(0));
     const src = audioCtx.createBufferSource();
     src.buffer = audioBuf;
-    src.connect(audioCtx.destination);
-    src.onended = () => playNext();   // Do NOT close audioCtx here — reuse it
+    // Route through botAnalyser so visualizer can read frequency data
+    if (botAnalyser) {
+      src.connect(botAnalyser);
+    } else {
+      src.connect(audioCtx.destination);
+    }
+    src.onended = () => playNext();
     src.start(0);
   } catch (e) {
     console.error('Audio decode error:', e);
-    playNext(); // skip broken chunk, try next
+    playNext();
   }
 }
 
-// ── Transcript bubbles ────────────────────────────────────────────────────────
+// ── Transcript bubbles ─────────────────────────────────────────────────────────
 function addBubble(role, text, lang) {
   const box = document.getElementById('transcript');
   box.style.display = 'block';
