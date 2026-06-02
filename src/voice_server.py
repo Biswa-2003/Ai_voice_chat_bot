@@ -63,8 +63,8 @@ _DEEPGRAM_URL = (
     "&punctuate=true"
     "&smart_format=true"
     "&interim_results=true"
-    "&endpointing=300"
-    "&utterance_end_ms=1000"
+    "&endpointing=1200"
+    "&utterance_end_ms=1500"
     "&vad_events=true"
     "&filler_words=false"
 )
@@ -82,10 +82,49 @@ _EDGE_VOICES = {
 # Sarvam speakers by (lang, gender)
 _SARVAM_SPEAKERS = {
     ("en", "female"): "anushka",
-    ("en", "male"):   "amol",
-    ("hi", "female"): "meera",
-    ("hi", "male"):   "arjun",
+    ("en", "male"):   "abhilash",
+    ("hi", "female"): "anushka",
+    ("hi", "male"):   "abhilash",
 }
+
+
+# Cache to hold synthesized filler audio bytes for instant playback
+_FILLER_AUDIO_CACHE = {}
+
+
+async def prewarm_cache():
+    logger.info("Pre-warming Voicebot TTS Cache in background...")
+    # Languages to pre-warm
+    langs = ["en", "hi"]
+    genders = ["female", "male"]
+    
+    for lang in langs:
+        for gender in genders:
+            # 1. Warm Greeting
+            greeting = _GREETINGS.get((lang, gender), _GREETINGS[("en", gender)])
+            cache_key = ("greeting", lang, gender)
+            try:
+                audio = await _tts(greeting, lang, gender)
+                if audio:
+                    _FILLER_AUDIO_CACHE[cache_key] = audio
+                    logger.info("Pre-warmed greeting for lang=%s, gender=%s", lang, gender)
+            except Exception as exc:
+                logger.warning("Failed to pre-warm greeting for lang=%s, gender=%s: %s", lang, gender, exc)
+                
+            # 2. Warm Fillers (first two)
+            fillers = _FILLERS.get(lang, _FILLERS["en"])[:2]
+            for filler in fillers:
+                cache_key = (filler, lang, gender)
+                try:
+                    audio = await _tts(filler, lang, gender)
+                    if audio:
+                        _FILLER_AUDIO_CACHE[cache_key] = audio
+                        logger.info("Pre-warmed filler '%s' for lang=%s, gender=%s", filler, lang, gender)
+                except Exception as exc:
+                    logger.warning("Failed to pre-warm filler '%s': %s", filler, exc)
+                    
+    logger.info("Voicebot TTS Cache pre-warming completed!")
+
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +153,27 @@ async def handle_voice_session(
                                _GREETINGS[("en", voice_gender)])
     cm.add_turn("assistant", greeting, language=current_lang)
     try:
-        greeting_audio = await _tts(greeting, current_lang, voice_gender)
-        await ws.send_json({"type": "bot_text", "text": greeting, "lang": current_lang})
+        cache_key = ("greeting", current_lang, voice_gender)
+        if cache_key in _FILLER_AUDIO_CACHE:
+            greeting_audio = _FILLER_AUDIO_CACHE[cache_key]
+            logger.info("Greeting cache HIT: lang=%s, gender=%s", current_lang, voice_gender)
+        else:
+            greeting_audio = await _tts(greeting, current_lang, voice_gender)
+            if greeting_audio:
+                _FILLER_AUDIO_CACHE[cache_key] = greeting_audio
+                logger.info("Greeting cache MISS, cached: lang=%s, gender=%s", current_lang, voice_gender)
+                
         if greeting_audio:
-            await ws.send_bytes(greeting_audio)
+            import base64
+            audio_b64 = base64.b64encode(greeting_audio).decode("utf-8")
+            await ws.send_json({
+                "type": "bot_text_audio",
+                "text": greeting,
+                "audio": audio_b64,
+                "lang": current_lang
+            })
+        else:
+            await ws.send_json({"type": "bot_text", "text": greeting, "lang": current_lang})
     except Exception as exc:
         logger.warning("Greeting TTS failed: %s", exc)
         await ws.send_json({"type": "bot_text", "text": greeting, "lang": current_lang})
@@ -128,6 +184,9 @@ async def handle_voice_session(
         await ws.send_json({"type": "error", "text": "DEEPGRAM_API_KEY not configured."})
         return
 
+    interrupt_event = asyncio.Event()
+    text_input_queue = asyncio.Queue()
+
     try:
         async with aiohttp.ClientSession() as http_session:
             async with http_session.ws_connect(
@@ -137,12 +196,17 @@ async def handle_voice_session(
                 timeout=aiohttp.ClientTimeout(total=None, connect=10),
             ) as dg_ws:
                 await asyncio.gather(
-                    _forward_audio(ws, dg_ws),
+                    _forward_audio(ws, dg_ws, interrupt_event, text_input_queue),
                     _keepalive_deepgram(dg_ws),
                     _process_transcripts(
                         ws, dg_ws, cm, detector, scope_validator,
-                        messages, current_lang, voice_gender,
+                        messages, current_lang, voice_gender, interrupt_event
                     ),
+                    _process_text_inputs(
+                        ws, cm, detector, scope_validator,
+                        messages, current_lang, voice_gender, interrupt_event,
+                        text_input_queue
+                    )
                 )
     except WebSocketDisconnect:
         pass
@@ -156,13 +220,34 @@ async def handle_voice_session(
             logger.error("Failed to save log: %s", exc)
 
 
-async def _forward_audio(ws: WebSocket, dg_ws) -> None:
-    """Stream browser audio chunks → Deepgram. Runs until browser disconnects."""
+async def _forward_audio(ws: WebSocket, dg_ws, interrupt_event: asyncio.Event, text_input_queue: asyncio.Queue) -> None:
+    """Stream browser audio chunks → Deepgram, and user text suggestions → text queue."""
     try:
-        async for chunk in ws.iter_bytes():
-            if dg_ws.closed:
-                break
-            await dg_ws.send_bytes(chunk)
+        while True:
+            msg = await ws.receive()
+            if "bytes" in msg:
+                chunk = msg["bytes"]
+                if len(chunk) == 4 and list(chunk) == [9, 9, 9, 9]:
+                    logger.info("Interrupt signal received from client!")
+                    interrupt_event.set()
+                    try:
+                        await ws.send_json({"type": "interrupted", "interrupted": True})
+                    except Exception as e:
+                        logger.warning("Could not send interrupted confirmation to client: %s", e)
+                else:
+                    if not dg_ws.closed:
+                        await dg_ws.send_bytes(chunk)
+            elif "text" in msg:
+                text_str = msg["text"]
+                try:
+                    data = json.loads(text_str)
+                    if data.get("type") == "user_text_input":
+                        text = data.get("text", "")
+                        if text:
+                            logger.info("Enqueuing suggestion chip text: %s", text)
+                            await text_input_queue.put(text)
+                except Exception as e:
+                    logger.warning("Failed to parse text message: %s", e)
     except (WebSocketDisconnect, Exception):
         pass
     finally:
@@ -193,6 +278,7 @@ async def _process_transcripts(
     messages: List[dict],
     current_lang: str,
     voice_gender: str,
+    interrupt_event: asyncio.Event,
 ) -> None:
     """Receive Deepgram transcripts → filler → LLM → TTS → browser."""
     async for msg in dg_ws:
@@ -226,61 +312,135 @@ async def _process_transcripts(
             in_scope, topic = scope_validator.check(transcript)
             cm.add_turn("user", transcript, language=detected, topic=topic or "general")
             await ws.send_json({"type": "user_text", "text": transcript, "lang": detected})
+            
+            try:
+                await ws.send_json({
+                    "type": "analytics_update",
+                    "sentiment": cm.sentiment,
+                    "detected_lang": current_lang,
+                    "turn_count": cm.turn_count,
+                    "scope_violations": len(cm.scope_violations),
+                    "screening_goals": cm.get_screening_goals()
+                })
+            except Exception as e:
+                logger.debug("Failed sending user analytics update: %s", e)
 
             if not in_scope:
                 cm.record_scope_violation(topic or "unknown")
                 reply = scope_validator.get_out_of_scope_reply(detected, topic)
+                cm.add_turn("assistant", reply, language=current_lang)
+                logger.info("Bot  [%s]: %s", current_lang, reply)
+                
+                try:
+                    await ws.send_json({
+                        "type": "analytics_update",
+                        "sentiment": cm.sentiment,
+                        "detected_lang": current_lang,
+                        "turn_count": cm.turn_count,
+                        "scope_violations": len(cm.scope_violations),
+                        "screening_goals": cm.get_screening_goals()
+                    })
+                except Exception as e:
+                    logger.debug("Failed sending out-of-scope analytics update: %s", e)
+                
+                try:
+                    audio = await _tts(reply, current_lang, voice_gender)
+                    if audio:
+                        import base64
+                        audio_b64 = base64.b64encode(audio).decode("utf-8")
+                        await ws.send_json({
+                            "type": "bot_text_audio",
+                            "text": reply,
+                            "audio": audio_b64,
+                            "lang": current_lang
+                        })
+                    else:
+                        await ws.send_json({"type": "bot_text", "text": reply, "lang": current_lang})
+                except Exception as exc:
+                    logger.error("TTS out-of-scope error: %s", exc)
+                    await ws.send_json({"type": "bot_text", "text": reply, "lang": current_lang})
             else:
-                # ── LLM (start immediately as background task) ────────────
+                # ── LLM streaming + sentence-by-sentence TTS ────────────
                 lang_instruction = (
-                    "The user is speaking Hindi. You MUST reply ONLY in Hindi (use Hinglish if needed, but respond in Hindi script or Hindi romanization)."
+                    "Respond in Hindi"
                     if detected == "hi"
-                    else "The user is speaking English. Reply in English."
+                    else "Respond in English"
                 )
                 messages.append({
                     "role": "user",
                     "content": f"{transcript}\n\n[LANGUAGE INSTRUCTION: {lang_instruction}]"
                 })
-                llm_task = asyncio.create_task(_call_llm(messages))
 
                 # ── Filler word — plays while LLM thinks ─────────────────
                 filler_text = random.choice(_FILLERS.get(detected, _FILLERS["en"]))
                 try:
-                    filler_audio = await _tts(filler_text, detected, voice_gender)
-                    if filler_audio:
+                    cache_key = (filler_text, detected, voice_gender)
+                    if cache_key in _FILLER_AUDIO_CACHE:
+                        filler_audio = _FILLER_AUDIO_CACHE[cache_key]
+                        logger.info("Filler cache HIT: %s", filler_text)
+                    else:
+                        filler_audio = await _tts(filler_text, detected, voice_gender)
+                        if filler_audio:
+                            _FILLER_AUDIO_CACHE[cache_key] = filler_audio
+                            logger.info("Filler cache MISS, cached: %s", filler_text)
+                    
+                    if filler_audio and not interrupt_event.is_set():
                         await ws.send_bytes(filler_audio)
                 except Exception as exc:
                     logger.debug("Filler TTS skipped: %s", exc)
 
-                # ── Wait for LLM ──────────────────────────────────────────
-                reply = await llm_task
-                messages.append({"role": "assistant", "content": reply})
-                # Keep context window manageable: system + last 20 messages
-                if len(messages) > 21:
-                    messages[1:] = messages[-20:]
+                # ── Stream LLM and synthesize sentence-by-sentence ──────
+                full_reply_sentences = []
+                interrupt_event.clear() # Reset at start of speaking turn
+                
+                async for sentence in _stream_llm_sentences(messages):
+                    if interrupt_event.is_set():
+                        logger.info("Bot speech interrupted during LLM generation!")
+                        break
+                        
+                    full_reply_sentences.append(sentence)
+                    logger.info("Sentence streamed: %s", sentence)
+                    
+                    # Synthesize audio and send
+                    try:
+                        audio = await _tts(sentence, current_lang, voice_gender)
+                        if interrupt_event.is_set():
+                            logger.info("Bot speech interrupted after TTS synthesis!")
+                            break
+                        if audio:
+                            import base64
+                            audio_b64 = base64.b64encode(audio).decode("utf-8")
+                            await ws.send_json({
+                                "type": "bot_text_audio",
+                                "text": sentence,
+                                "audio": audio_b64,
+                                "lang": current_lang
+                            })
+                        else:
+                            await ws.send_json({"type": "bot_text", "text": sentence, "lang": current_lang})
+                    except Exception as exc:
+                        logger.error("TTS sentence stream error: %s", exc)
 
-            cm.add_turn("assistant", reply, language=current_lang)
-            logger.info("Bot  [%s]: %s", current_lang, reply)
+                if full_reply_sentences:
+                    reply = " ".join(full_reply_sentences)
+                    messages.append({"role": "assistant", "content": reply})
+                    # Keep context window manageable: system + last 20 messages
+                    if len(messages) > 21:
+                        messages[1:] = messages[-20:]
 
-            # ── Streaming TTS (sentence by sentence) ──────────────────────
-            # Send text immediately so user sees it, then stream audio
-            # sentence-by-sentence so first audio arrives in ~300ms not 5-6s
-            await ws.send_json({"type": "bot_text", "text": reply, "lang": current_lang})
-            sentences = _split_sentences(reply)
-            first_task = asyncio.create_task(_tts(sentences[0], current_lang, voice_gender))
-            try:
-                first_audio = await first_task
-                if first_audio:
-                    await ws.send_bytes(first_audio)
-            except Exception as exc:
-                logger.error("TTS sentence 1 error: %s", exc)
-            for sentence in sentences[1:]:
-                try:
-                    audio = await _tts(sentence, current_lang, voice_gender)
-                    if audio:
-                        await ws.send_bytes(audio)
-                except Exception as exc:
-                    logger.error("TTS sentence error: %s", exc)
+                    cm.add_turn("assistant", reply, language=current_lang)
+                    logger.info("Bot complete [%s]: %s", current_lang, reply)
+                    try:
+                        await ws.send_json({
+                            "type": "analytics_update",
+                            "sentiment": cm.sentiment,
+                            "detected_lang": current_lang,
+                            "turn_count": cm.turn_count,
+                            "scope_violations": len(cm.scope_violations),
+                            "screening_goals": cm.get_screening_goals()
+                        })
+                    except Exception as e:
+                        logger.debug("Failed sending assistant complete analytics update: %s", e)
 
         elif msg_type == "Metadata":
             logger.debug("Deepgram metadata: %s", data)
@@ -346,6 +506,57 @@ async def _call_llm(messages: List[dict]) -> str:
         return "I'm sorry, I had a technical issue. Could you please repeat that?"
 
 
+async def _stream_llm_sentences(messages: List[dict]):
+    import openai
+    import re
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    base_url = os.getenv("OPENAI_BASE_URL")
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")
+
+    if api_key.startswith("sk-or-v1-") and not base_url:
+        base_url = "https://openrouter.ai/api/v1"
+        if model == "gpt-4o":
+            model = "openai/gpt-4o-mini"
+
+    client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
+    
+    try:
+        stream = await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.65,
+            max_tokens=512,
+            stream=True,
+        )
+        
+        buffer = ""
+        sentence_end_pat = re.compile(r'([^.!?।\n]+[.!?।\n]+)(?:\s+|$)')
+        
+        async for chunk in stream:
+            content = chunk.choices[0].delta.content or ""
+            if not content:
+                continue
+            buffer += content
+            
+            while True:
+                match = sentence_end_pat.match(buffer)
+                if not match:
+                    break
+                sentence = match.group(1).strip()
+                buffer = buffer[match.end():]
+                if sentence:
+                    yield sentence
+
+        final_text = buffer.strip()
+        if final_text:
+            yield final_text
+            
+    except Exception as exc:
+        logger.error("LLM stream error: %s", exc)
+        yield "I'm sorry, I had a technical issue. Could you please repeat that?"
+
+
 # ---------------------------------------------------------------------------
 # TTS — edge-tts (free default) / Sarvam / ElevenLabs / OpenAI
 # ---------------------------------------------------------------------------
@@ -359,16 +570,21 @@ async def _tts(text: str, lang: str, voice_gender: str = "female") -> bytes | No
             return await _tts_openai(text, voice_gender)
         if provider == "sarvam":
             return await _tts_sarvam(text, lang, voice_gender)
-        # default: edge-tts (free, good quality, gender-aware)
+        # default: edge-tts
         return await _tts_edge(text, lang, voice_gender)
     except Exception as exc:
-        logger.warning("TTS [%s] failed: %s — trying gTTS fallback", provider, exc)
+        logger.warning("TTS [%s] failed: %s — trying edge-tts fallback", provider, exc)
         try:
-            # gTTS (Google TTS) — free, no API key, different servers than edge-tts
-            return await _tts_gtts(text, lang)
+            # Fallback to edge-tts if premium provider fails (maintains gender-awareness)
+            return await _tts_edge(text, lang, voice_gender)
         except Exception as exc2:
-            logger.error("gTTS fallback also failed: %s", exc2)
-            return None
+            logger.warning("edge-tts fallback also failed: %s — trying gTTS", exc2)
+            try:
+                # gTTS (Google TTS) — free, no API key, different servers than edge-tts
+                return await _tts_gtts(text, lang)
+            except Exception as exc3:
+                logger.error("gTTS fallback also failed: %s", exc3)
+                return None
 
 
 async def _tts_sarvam(text: str, lang: str, voice_gender: str = "female") -> bytes:
@@ -426,11 +642,12 @@ async def _tts_openai(text: str, voice_gender: str = "female") -> bytes:
     client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
     # shimmer/nova = female, echo/onyx = male
     voice = "shimmer" if voice_gender == "female" else "echo"
+    # Increase speed from 0.95 to 1.12 for snappier conversation pacing
     resp = await client.audio.speech.create(
         model="gpt-4o-mini-tts",
         voice=voice,
         input=text,
-        speed=0.95,
+        speed=1.12,
     )
     return resp.content
 
@@ -441,7 +658,8 @@ async def _tts_edge(text: str, lang: str, voice_gender: str = "female") -> bytes
     import edge_tts
 
     voice = _EDGE_VOICES.get((lang, voice_gender), "en-IN-NeerjaNeural")
-    communicate = edge_tts.Communicate(text, voice)
+    # Increase rate to +15% for faster, snappier replies
+    communicate = edge_tts.Communicate(text, voice, rate="+15%")
 
     buf = io.BytesIO()
     async for chunk in communicate.stream():
@@ -474,3 +692,130 @@ async def _tts_gtts(text: str, lang: str) -> bytes:
         raise RuntimeError("gTTS returned empty audio")
     logger.info("gTTS OK: lang=%s bytes=%d", lang_code, len(audio))
     return audio
+
+
+async def _process_text_inputs(
+    ws: WebSocket,
+    cm: ConversationManager,
+    detector: LanguageDetector,
+    scope_validator: ScopeValidator,
+    messages: List[dict],
+    current_lang: str,
+    voice_gender: str,
+    interrupt_event: asyncio.Event,
+    text_input_queue: asyncio.Queue,
+) -> None:
+    """Worker task that consumes user text suggestions, processes them via LLM, and streams speech back."""
+    try:
+        while True:
+            transcript = await text_input_queue.get()
+            text_input_queue.task_done()
+            
+            # ── Language detection ────────────────────────────────────────
+            detected = detector.detect(transcript)
+            if detected != current_lang:
+                current_lang = detected
+                logger.info("Language (Text Input): → %s", current_lang)
+
+            logger.info("User Text Suggestion [%s]: %s", current_lang, transcript)
+
+            # ── Scope check ───────────────────────────────────────────────
+            in_scope, topic = scope_validator.check(transcript)
+            cm.add_turn("user", transcript, language=detected, topic=topic or "general")
+            await ws.send_json({"type": "user_text", "text": transcript, "lang": detected})
+            
+            try:
+                await ws.send_json({
+                    "type": "analytics_update",
+                    "sentiment": cm.sentiment,
+                    "detected_lang": current_lang,
+                    "turn_count": cm.turn_count,
+                    "scope_violations": len(cm.scope_violations),
+                    "screening_goals": cm.get_screening_goals()
+                })
+            except Exception:
+                pass
+
+            if not in_scope:
+                cm.record_scope_violation(topic or "unknown")
+                reply = scope_validator.get_out_of_scope_reply(detected, topic)
+                cm.add_turn("assistant", reply, language=current_lang)
+                logger.info("Bot (Text Out-of-Scope) [%s]: %s", current_lang, reply)
+                
+                try:
+                    audio = await _tts(reply, current_lang, voice_gender)
+                    if audio:
+                        import base64
+                        audio_b64 = base64.b64encode(audio).decode("utf-8")
+                        await ws.send_json({
+                            "type": "bot_text_audio",
+                            "text": reply,
+                            "audio": audio_b64,
+                            "lang": current_lang
+                        })
+                    else:
+                        await ws.send_json({"type": "bot_text", "text": reply, "lang": current_lang})
+                except Exception as exc:
+                    logger.error("TTS out-of-scope error: %s", exc)
+                    await ws.send_json({"type": "bot_text", "text": reply, "lang": current_lang})
+            else:
+                lang_instruction = (
+                    "Respond in Hindi"
+                    if detected == "hi"
+                    else "Respond in English"
+                )
+                messages.append({
+                    "role": "user",
+                    "content": f"{transcript}\n\n[LANGUAGE INSTRUCTION: {lang_instruction}]"
+                })
+
+                full_reply_sentences = []
+                interrupt_event.clear()
+                
+                async for sentence in _stream_llm_sentences(messages):
+                    if interrupt_event.is_set():
+                        logger.info("Bot speech interrupted during LLM generation (text path)!")
+                        break
+                    full_reply_sentences.append(sentence)
+                    
+                    try:
+                        audio = await _tts(sentence, current_lang, voice_gender)
+                        if interrupt_event.is_set():
+                            break
+                        if audio:
+                            import base64
+                            audio_b64 = base64.b64encode(audio).decode("utf-8")
+                            await ws.send_json({
+                                "type": "bot_text_audio",
+                                "text": sentence,
+                                "audio": audio_b64,
+                                "lang": current_lang
+                            })
+                        else:
+                            await ws.send_json({"type": "bot_text", "text": sentence, "lang": current_lang})
+                    except Exception as exc:
+                        logger.error("TTS stream error on text suggestion: %s", exc)
+
+                if full_reply_sentences:
+                    reply = " ".join(full_reply_sentences)
+                    messages.append({"role": "assistant", "content": reply})
+                    if len(messages) > 21:
+                        messages[1:] = messages[-20:]
+
+                    cm.add_turn("assistant", reply, language=current_lang)
+                    logger.info("Bot Text complete [%s]: %s", current_lang, reply)
+                    
+                    try:
+                        await ws.send_json({
+                            "type": "analytics_update",
+                            "sentiment": cm.sentiment,
+                            "detected_lang": current_lang,
+                            "turn_count": cm.turn_count,
+                            "scope_violations": len(cm.scope_violations),
+                            "screening_goals": cm.get_screening_goals()
+                        })
+                    except Exception:
+                        pass
+    except Exception as e:
+        logger.error("Text input worker error: %s", e)
+

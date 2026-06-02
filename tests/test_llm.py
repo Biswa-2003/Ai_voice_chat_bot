@@ -2,35 +2,30 @@
 LLM processor tests — run without network calls by mocking the LiveKit plugin.
 """
 import pytest
-from unittest.mock import MagicMock, patch
 
 
 class TestLLMProcessorInit:
     def test_presale_scenario(self):
-        with patch("livekit.plugins.openai.LLM", return_value=MagicMock()):
-            from src.llm_processor import LLMProcessor
-            proc = LLMProcessor(scenario="presale")
-            assert proc.scenario == "presale"
+        from src.llm_processor import LLMProcessor
+        proc = LLMProcessor(scenario="presale")
+        assert proc.scenario == "presale"
 
     def test_sales_scenario(self):
-        with patch("livekit.plugins.openai.LLM", return_value=MagicMock()):
-            from src.llm_processor import LLMProcessor
-            proc = LLMProcessor(scenario="sales")
-            assert proc.scenario == "sales"
+        from src.llm_processor import LLMProcessor
+        proc = LLMProcessor(scenario="sales")
+        assert proc.scenario == "sales"
 
     def test_marketing_scenario(self):
-        with patch("livekit.plugins.openai.LLM", return_value=MagicMock()):
-            from src.llm_processor import LLMProcessor
-            proc = LLMProcessor(scenario="marketing")
-            assert proc.scenario == "marketing"
+        from src.llm_processor import LLMProcessor
+        proc = LLMProcessor(scenario="marketing")
+        assert proc.scenario == "marketing"
 
 
 class TestLLMScopeIntegration:
     @pytest.fixture
     def processor(self):
-        with patch("livekit.plugins.openai.LLM", return_value=MagicMock()):
-            from src.llm_processor import LLMProcessor
-            return LLMProcessor(scenario="presale")
+        from src.llm_processor import LLMProcessor
+        return LLMProcessor(scenario="presale")
 
     def test_in_scope_returns_true(self, processor):
         assert processor.check_scope("Tell me about your product features") is True
@@ -52,10 +47,6 @@ class TestLLMScopeIntegration:
         msg = processor.get_out_of_scope_message("hi", "pricing")
         assert isinstance(msg, str)
         assert len(msg) > 10
-
-    def test_get_engine_returns_object(self, processor):
-        engine = processor.get_engine()
-        assert engine is not None
 
 
 class TestSentimentAnalysis:

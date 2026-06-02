@@ -97,6 +97,35 @@ class ConversationManager:
     # Context export (spec section 3.5 shape)
     # ------------------------------------------------------------------
 
+    def get_screening_goals(self) -> Dict[str, bool]:
+        """Runs a fast, rule-based semantic parser on history to verify business qualification milestones."""
+        history_text = " ".join([turn["content"].lower() for turn in self.conversation_history])
+        
+        if self.scenario == "presale":
+            return {
+                "Greeting & Welcome": any(w in history_text for w in ["welcome", "swaagat", "hello", "hi", "namaste", "priya", "aryan"]),
+                "Identify Target Industry": any(w in history_text for w in ["industry", "sector", "business", "field", "kaam", "domain", "it", "tech", "retail", "finance"]),
+                "Determine Team Size": any(w in history_text for w in ["size", "employee", "team", "people", "badi", "chhoti", "log", "member", "staff", "hundred", "thousand", "fifty", "ten"]),
+                "Discover Key Pain Points": any(w in history_text for w in ["challenge", "pain", "problem", "difficult", "struggle", "ddikkat", "pareshani", "muskil", "slow", "error", "manual"]),
+                "Offer Product Demo": any(w in history_text for w in ["schedule", "demo", "meeting", "consultation", "appointment", "connect", "baat", "call", "webinar"])
+            }
+        elif self.scenario == "sales":
+            return {
+                "Greeting & Introduction": any(w in history_text for w in ["welcome", "swaagat", "hello", "hi", "namaste", "arjun", "aryan"]),
+                "Assess Current Solution": any(w in history_text for w in ["current", "solution", "system", "tool", "software", "already", "using", "use", "excel", "sheets"]),
+                "Detail Product Features": any(w in history_text for w in ["feature", "capability", "benefit", "details", "integration", "api", "dashboard", "reporting", "speed"]),
+                "Handle Core Objections": any(w in history_text for w in ["expensive", "cost", "think", "price", "daam", "budget", "competitor", "discount"]),
+                "Schedule Closing Call": any(w in history_text for w in ["schedule", "demo", "meeting", "consultation", "appointment", "connect", "baat", "call", "close", "onboard"])
+            }
+        else:  # marketing
+            return {
+                "Greeting & Re-engage": any(w in history_text for w in ["welcome", "swaagat", "hello", "hi", "namaste", "meera", "priya"]),
+                "Discover Business Goals": any(w in history_text for w in ["goal", "target", "focus", "plan", "aim", "achieve", "grow", "sales", "leads"]),
+                "Share Case Study/Resource": any(w in history_text for w in ["resource", "webinar", "whitepaper", "guide", "blog", "details", "case study", "ebook", "pdf", "link"]),
+                "Gauge Sales Readiness": any(w in history_text for w in ["ready", "evaluate", "buy", "interested", "sales", "introduce", "talk", "salesperson"]),
+                "Collect Contact Details": any(w in history_text for w in ["contact", "email", "phone", "number", "follow up", "send"])
+            }
+
     def to_context_dict(self) -> Dict[str, Any]:
         return {
             "conversation_id": self.conversation_id,
@@ -111,4 +140,5 @@ class ConversationManager:
             "sentiment": self.sentiment,
             "topic_categories": self.topic_categories,
             "scope_violations": self.scope_violations,
+            "screening_goals": self.get_screening_goals()
         }

@@ -32,6 +32,15 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+async def startup_event():
+    import asyncio
+    from src.voice_server import prewarm_cache
+    logger.info("Scheduling voice cache pre-warming on startup...")
+    asyncio.create_task(prewarm_cache())
+
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """
