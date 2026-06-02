@@ -2,10 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps for audio processing
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libffi-dev \
+    gcc libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -15,9 +13,13 @@ COPY . .
 
 RUN mkdir -p logs
 
-ENV SCENARIO=presale \
+ENV PORT=8000 \
+    LOG_LEVEL=INFO \
+    SCENARIO=presale \
     DEFAULT_LANGUAGE=en \
     LOG_DIR=logs \
-    LOG_LEVEL=INFO
+    TTS_PROVIDER=sarvam
 
-CMD ["python", "-m", "src.main", "start"]
+EXPOSE 8000
+
+CMD ["python", "token_server.py"]
