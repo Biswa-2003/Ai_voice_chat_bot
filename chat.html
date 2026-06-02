@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI Voicebot — Priya</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a14;
+      color: #e2e2f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 520px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* ── Header ── */
+    .header {
+      text-align: center;
+    }
+    .header h1 { font-size: 1.5rem; color: #a78bfa; font-weight: 700; }
+    .header p  { font-size: 0.82rem; color: #666; margin-top: 3px; }
+
+    /* ── Scenario pills ── */
+    .scenarios {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+    .scenario-btn {
+      padding: 5px 18px;
+      border-radius: 20px;
+      border: 1px solid #333;
+      background: transparent;
+      color: #888;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.18s;
+    }
+    .scenario-btn.active, .scenario-btn:hover {
+      background: #a78bfa;
+      border-color: #a78bfa;
+      color: #fff;
+    }
+
+    /* ── Orb ── */
+    .orb-wrap { display: flex; justify-content: center; }
+    .orb {
+      width: 110px; height: 110px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 40% 40%, #7c3aed, #312e81);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 2.4rem;
+      cursor: pointer;
+      transition: box-shadow 0.3s, transform 0.3s;
+      user-select: none;
+    }
+    .orb.idle    { box-shadow: 0 0 0 0 transparent; }
+    .orb.listening {
+      box-shadow: 0 0 0 12px rgba(124,58,237,0.25), 0 0 0 24px rgba(124,58,237,0.1);
+      animation: breathe 2s ease-in-out infinite;
+    }
+    .orb.speaking {
+      box-shadow: 0 0 0 16px rgba(167,139,250,0.3), 0 0 40px rgba(167,139,250,0.5);
+      animation: pulse 0.8s ease-in-out infinite;
+    }
+    @keyframes breathe {
+      0%,100% { transform: scale(1); }
+      50%      { transform: scale(1.04); }
+    }
+    @keyframes pulse {
+      0%,100% { transform: scale(1); }
+      50%      { transform: scale(1.08); }
+    }
+
+    /* ── Status line ── */
+    #status {
+      text-align: center;
+      font-size: 0.88rem;
+      color: #666;
+      min-height: 20px;
+    }
+    #status.on  { color: #34d399; }
+    #status.err { color: #f87171; }
+
+    /* ── Controls ── */
+    .controls { display: flex; gap: 10px; }
+    .btn {
+      flex: 1;
+      padding: 11px;
+      border-radius: 10px;
+      border: none;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.18s, transform 0.1s;
+    }
+    .btn:active { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.35; cursor: default; }
+    #connectBtn    { background: linear-gradient(135deg,#7c3aed,#4f46e5); color:#fff; }
+    #disconnectBtn { background: transparent; border: 1px solid #f87171; color: #f87171; display:none; }
+    #muteBtn       { background: transparent; border: 1px solid #555; color: #aaa; display:none; }
+
+    /* ── Transcript ── */
+    .transcript {
+      background: #0f0f1e;
+      border: 1px solid #1e1e3a;
+      border-radius: 12px;
+      padding: 12px;
+      max-height: 240px;
+      overflow-y: auto;
+      display: none;
+      scroll-behavior: smooth;
+    }
+    .bubble {
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 10px;
+    }
+    .bubble.user  { align-items: flex-end; }
+    .bubble.bot   { align-items: flex-start; }
+    .bubble-inner {
+      max-width: 85%;
+      padding: 8px 12px;
+      border-radius: 12px;
+      font-size: 0.83rem;
+      line-height: 1.5;
+    }
+    .bubble.user  .bubble-inner { background: #312e81; color: #c4b5fd; border-bottom-right-radius: 3px; }
+    .bubble.bot   .bubble-inner { background: #1a1a2e; color: #e2e2f0; border-bottom-left-radius: 3px; }
+    .bubble-meta {
+      font-size: 0.68rem;
+      color: #555;
+      margin-top: 3px;
+      padding: 0 4px;
+    }
+
+    /* ── Lang badge ── */
+    .lang-badge {
+      display: inline-block;
+      font-size: 0.62rem;
+      padding: 1px 6px;
+      border-radius: 8px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    .lang-en { background: #1e3a5f; color: #60a5fa; }
+    .lang-hi { background: #3a1e1e; color: #f97316; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Priya — AI Voicebot</h1>
+    <p>Presale · Sales · Marketing &nbsp;|&nbsp; English &amp; Hindi</p>
+  </div>
+
+  <div class="scenarios">
+    <button class="scenario-btn active" data-s="presale"  onclick="selectScenario(this)">Presale</button>
+    <button class="scenario-btn"        data-s="sales"    onclick="selectScenario(this)">Sales</button>
+    <button class="scenario-btn"        data-s="marketing" onclick="selectScenario(this)">Marketing</button>
+  </div>
+
+  <div class="orb-wrap"><div class="orb idle" id="orb">🎙️</div></div>
+
+  <div id="status">Select a scenario and click Connect</div>
+
+  <div class="controls">
+    <button class="btn" id="connectBtn"    onclick="connect()">Connect</button>
+    <button class="btn" id="muteBtn"       onclick="toggleMute()">Mute</button>
+    <button class="btn" id="disconnectBtn" onclick="disconnect()">End Call</button>
+  </div>
+
+  <div class="transcript" id="transcript"></div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+const SERVER = window.location.origin.replace(/^http/, 'ws');
+let ws         = null;
+let mediaRec   = null;
+let micStream  = null;
+let muted      = false;
+let botSpeaking = false;
+let audioQueue  = [];
+let audioCtx    = null;
+let scenario    = 'presale';
+
+// ── Scenario selection ───────────────────────────────────────────────────────
+function selectScenario(btn) {
+  if (ws) return; // locked while connected
+  scenario = btn.dataset.s;
+  document.querySelectorAll('.scenario-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+// ── Status helpers ───────────────────────────────────────────────────────────
+function setStatus(msg, cls = '') {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = cls;
+}
+function setOrb(state) {
+  const orb = document.getElementById('orb');
+  orb.className = `orb ${state}`;
+  orb.textContent = state === 'speaking' ? '🔊' : '🎙️';
+}
+
+// ── Connect ──────────────────────────────────────────────────────────────────
+async function connect() {
+  document.getElementById('connectBtn').disabled = true;
+  setStatus('Requesting microphone...');
+
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch (e) {
+    setStatus('Microphone access denied.', 'err');
+    document.getElementById('connectBtn').disabled = false;
+    return;
+  }
+
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  ws = new WebSocket(`${SERVER}/ws/${scenario}`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setStatus('Connected — speak now!', 'on');
+    setOrb('listening');
+    document.getElementById('connectBtn').style.display = 'none';
+    document.getElementById('muteBtn').style.display = 'block';
+    document.getElementById('disconnectBtn').style.display = 'block';
+    document.querySelectorAll('.scenario-btn').forEach(b => b.disabled = true);
+    startMic();
+  };
+
+  ws.onmessage = async (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      // Bot audio
+      enqueueAudio(event.data);
+    } else {
+      const msg = JSON.parse(event.data);
+      handleMessage(msg);
+    }
+  };
+
+  ws.onerror = () => setStatus('Connection error.', 'err');
+  ws.onclose = () => onDisconnected();
+}
+
+// ── Mic ──────────────────────────────────────────────────────────────────────
+function startMic() {
+  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus'
+    : 'audio/webm';
+  mediaRec = new MediaRecorder(micStream, { mimeType });
+  mediaRec.ondataavailable = (e) => {
+    if (e.data.size > 0 && ws?.readyState === WebSocket.OPEN && !muted && !botSpeaking)
+      ws.send(e.data);
+  };
+  mediaRec.start(100); // 100 ms chunks
+}
+
+function toggleMute() {
+  muted = !muted;
+  const btn = document.getElementById('muteBtn');
+  btn.textContent = muted ? 'Unmute' : 'Mute';
+  btn.style.color  = muted ? '#f87171' : '#aaa';
+  btn.style.borderColor = muted ? '#f87171' : '#555';
+  setStatus(muted ? 'Microphone muted' : 'Listening…', muted ? 'err' : 'on');
+}
+
+// ── Disconnect ───────────────────────────────────────────────────────────────
+function disconnect() {
+  ws?.close();
+  cleanup();
+}
+
+function onDisconnected() {
+  cleanup();
+  setStatus('Disconnected');
+  setOrb('idle');
+  document.getElementById('connectBtn').style.display = 'block';
+  document.getElementById('connectBtn').disabled = false;
+  document.getElementById('muteBtn').style.display = 'none';
+  document.getElementById('disconnectBtn').style.display = 'none';
+  document.querySelectorAll('.scenario-btn').forEach(b => b.disabled = false);
+}
+
+function cleanup() {
+  mediaRec?.stop();
+  micStream?.getTracks().forEach(t => t.stop());
+  mediaRec = null; micStream = null;
+  audioQueue = []; botSpeaking = false;
+}
+
+// ── Message handler ──────────────────────────────────────────────────────────
+function handleMessage(msg) {
+  if (msg.type === 'user_text') {
+    addBubble('user', msg.text, msg.lang);
+    if (!botSpeaking) { setOrb('listening'); setStatus('Listening…', 'on'); }
+  } else if (msg.type === 'bot_text') {
+    addBubble('bot', msg.text, msg.lang);
+    setOrb('speaking');
+    setStatus('Priya is speaking…', 'on');
+  } else if (msg.type === 'error') {
+    setStatus(msg.text, 'err');
+  }
+}
+
+// ── Audio queue ──────────────────────────────────────────────────────────────
+function enqueueAudio(buffer) {
+  audioQueue.push(buffer);
+  if (!botSpeaking) playNext();
+}
+
+async function playNext() {
+  if (!audioQueue.length) {
+    botSpeaking = false;
+    setOrb('listening');
+    setStatus('Listening…', 'on');
+    return;
+  }
+  botSpeaking = true;
+  const buf = audioQueue.shift();
+  try {
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const audioBuf = await audioCtx.decodeAudioData(buf.slice(0));
+    const src = audioCtx.createBufferSource();
+    src.buffer = audioBuf;
+    src.connect(audioCtx.destination);
+    src.onended = () => playNext();
+    src.start(0);
+  } catch (e) {
+    console.error('Audio decode error:', e);
+    playNext();
+  }
+}
+
+// ── Transcript bubbles ────────────────────────────────────────────────────────
+function addBubble(role, text, lang) {
+  const box = document.getElementById('transcript');
+  box.style.display = 'block';
+
+  const wrap = document.createElement('div');
+  wrap.className = `bubble ${role}`;
+
+  const inner = document.createElement('div');
+  inner.className = 'bubble-inner';
+  inner.textContent = text;
+
+  const badge = document.createElement('span');
+  badge.className = `lang-badge lang-${lang || 'en'}`;
+  badge.textContent = (lang === 'hi') ? 'HI' : 'EN';
+  inner.appendChild(badge);
+
+  const meta = document.createElement('div');
+  meta.className = 'bubble-meta';
+  meta.textContent = role === 'user' ? 'You' : 'Priya';
+
+  wrap.appendChild(inner);
+  wrap.appendChild(meta);
+  box.appendChild(wrap);
+  box.scrollTop = box.scrollHeight;
+}
+</script>
+</body>
+</html>

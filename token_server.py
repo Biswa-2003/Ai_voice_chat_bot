@@ -1,107 +1,75 @@
 """
-Token Server — FastAPI service that:
-  1. Creates a LiveKit room
-  2. Dispatches the voicebot agent to that room
-  3. Returns a token + ready-to-use playground URL
+Main server — FastAPI app that serves the chat UI and runs the voice pipeline.
 
 Endpoints:
-  GET  /          → health check
-  GET  /connect   → returns room, token, and playground URL
-  GET  /connect?scenario=sales  → use a specific scenario
+  GET  /           → home page
+  GET  /chat       → chat UI (chat.html)
+  GET  /health     → {"status": "ok"}
+  WS   /ws/{scenario}  → voice pipeline (browser ↔ Deepgram ↔ LLM ↔ TTS)
 """
 
-import os
-import time
 import logging
+import os
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse, HTMLResponse
-from livekit import api
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(),
+                    format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("token_server")
 
-app = FastAPI(title="Voicebot Token Server")
+app = FastAPI(title="AI Voicebot")
 
-LIVEKIT_URL        = os.getenv("LIVEKIT_URL", "")
-LIVEKIT_API_KEY    = os.getenv("LIVEKIT_API_KEY", "")
-LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "")
-AGENT_NAME         = os.getenv("LIVEKIT_AGENT_NAME", "voicebot")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """
-    <html><body style="font-family:sans-serif;padding:40px">
-    <h2>AI Voicebot — Token Server</h2>
-    <p>Use <a href="/connect">/connect</a> to get a room URL.</p>
-    <p>Use <code>/connect?scenario=sales</code> for a specific scenario.</p>
-    <p>Status: <strong style="color:green">Running</strong></p>
+    <html><body style="font-family:sans-serif;padding:40px;background:#0f0f1a;color:#e0e0e0">
+    <h2 style="color:#a78bfa">AI Voicebot — Server Running</h2>
+    <p>Open <a href="/chat" style="color:#a78bfa">/chat</a> to talk to the bot.</p>
+    <p>Status: <strong style="color:#34d399">Running</strong></p>
     </body></html>
     """
 
 
+@app.get("/chat")
+async def chat_ui():
+    chat_path = os.path.join(os.path.dirname(__file__), "chat.html")
+    return FileResponse(chat_path, media_type="text/html")
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return JSONResponse({"status": "ok"})
 
 
-@app.get("/connect")
-async def connect(
-    scenario: str = Query(default=None, description="presale | sales | marketing"),
-    user_name: str = Query(default="User", description="Display name for participant"),
-):
-    active_scenario = scenario or os.getenv("SCENARIO", "presale")
-    room_name = f"voicebot-{int(time.time())}"
-
+@app.websocket("/ws/{scenario}")
+async def voice_ws(websocket: WebSocket, scenario: str = "presale"):
+    valid = {"presale", "sales", "marketing"}
+    if scenario not in valid:
+        scenario = "presale"
+    await websocket.accept()
+    logger.info("WebSocket connected — scenario=%s", scenario)
     try:
-        lkapi = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-
-        # Create room
-        await lkapi.room.create_room(api.CreateRoomRequest(name=room_name))
-        logger.info("Room created: %s", room_name)
-
-        # Dispatch agent
-        await lkapi.agent_dispatch.create_dispatch(
-            api.CreateAgentDispatchRequest(
-                agent_name=AGENT_NAME,
-                room=room_name,
-                metadata=active_scenario,
-            )
-        )
-        logger.info("Agent dispatched to room: %s (scenario: %s)", room_name, active_scenario)
-
-        # Generate participant token
-        token = (
-            api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-            .with_identity(f"user-{int(time.time())}")
-            .with_name(user_name)
-            .with_grants(api.VideoGrants(room_join=True, room=room_name))
-            .to_jwt()
-        )
-
-        await lkapi.aclose()
-
-        playground_url = (
-            f"https://agents-playground.livekit.io/"
-            f"?liveKitUrl={LIVEKIT_URL}&token={token}"
-        )
-
-        return JSONResponse({
-            "room": room_name,
-            "scenario": active_scenario,
-            "livekit_url": LIVEKIT_URL,
-            "token": token,
-            "playground_url": playground_url,
-            "message": "Open playground_url in your browser to start talking to the bot."
-        })
-
-    except Exception as e:
-        logger.error("Failed to create session: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        from src.voice_server import handle_voice_session
+        await handle_voice_session(websocket, scenario)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.error("WebSocket error: %s", exc)
+    finally:
+        logger.info("WebSocket disconnected — scenario=%s", scenario)
 
 
 if __name__ == "__main__":

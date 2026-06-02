@@ -8,10 +8,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir fastapi uvicorn[standard]
 
 COPY . .
 
-ENV TOKEN_SERVER_PORT=8000
+RUN mkdir -p logs
+
+ENV PORT=8000 \
+    LOG_LEVEL=INFO \
+    SCENARIO=presale \
+    DEFAULT_LANGUAGE=en \
+    LOG_DIR=logs \
+    TTS_PROVIDER=sarvam
+
+EXPOSE 8000
 
 CMD ["python", "token_server.py"]

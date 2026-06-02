@@ -1,32 +1,18 @@
 version: "3.9"
 
 services:
-
-  # ── Voice Agent ────────────────────────────────────────────────────────────
-  agent:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: voicebot-agent
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      - ./logs:/app/logs
-    environment:
-      - SCENARIO=${SCENARIO:-presale}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-
-  # ── Token Server (FastAPI) ─────────────────────────────────────────────────
-  api:
+  voicebot:
     build:
       context: .
       dockerfile: Dockerfile.api
-    container_name: voicebot-api
+    container_name: voicebot
     restart: unless-stopped
     env_file: .env
     ports:
-      - "${TOKEN_SERVER_PORT:-8000}:8000"
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./logs:/app/logs
     environment:
-      - TOKEN_SERVER_PORT=8000
-    depends_on:
-      - agent
+      - PORT=8000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SCENARIO=${SCENARIO:-presale}
