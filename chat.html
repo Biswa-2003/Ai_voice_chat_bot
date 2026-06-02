@@ -190,14 +190,15 @@
 <script>
 // ── State ────────────────────────────────────────────────────────────────────
 const SERVER = window.location.origin.replace(/^http/, 'ws');
-let ws         = null;
-let mediaRec   = null;
-let micStream  = null;
-let muted      = false;
-let botSpeaking = false;
-let audioQueue  = [];
-let audioCtx    = null;
-let scenario    = 'presale';
+let ws           = null;
+let mediaRec     = null;
+let micStream    = null;
+let muted        = false;
+let botSpeaking  = false;
+let isPlayingAudio = false;
+let audioQueue   = [];
+let audioCtx     = null;
+let scenario     = 'presale';
 
 // ── Scenario selection ───────────────────────────────────────────────────────
 function selectScenario(btn) {
@@ -225,7 +226,10 @@ async function connect() {
   setStatus('Requesting microphone...');
 
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    video: false
+  });
   } catch (e) {
     setStatus('Microphone access denied.', 'err');
     document.getElementById('connectBtn').disabled = false;
@@ -268,7 +272,9 @@ function startMic() {
     : 'audio/webm';
   mediaRec = new MediaRecorder(micStream, { mimeType });
   mediaRec.ondataavailable = (e) => {
-    if (e.data.size > 0 && ws?.readyState === WebSocket.OPEN && !muted && !botSpeaking)
+    // Always send audio — echoCancellation handles bot audio pickup.
+    // Stopping during bot speech causes Deepgram to time out and disconnect.
+    if (e.data.size > 0 && ws?.readyState === WebSocket.OPEN && !muted)
       ws.send(e.data);
   };
   mediaRec.start(100); // 100 ms chunks
@@ -329,24 +335,28 @@ function enqueueAudio(buffer) {
 
 async function playNext() {
   if (!audioQueue.length) {
+    isPlayingAudio = false;
     botSpeaking = false;
     setOrb('listening');
     setStatus('Listening…', 'on');
     return;
   }
+  isPlayingAudio = true;
   botSpeaking = true;
   const buf = audioQueue.shift();
   try {
+    // Resume context if browser suspended it (autoplay policy)
     if (audioCtx.state === 'suspended') await audioCtx.resume();
+    // decodeAudioData detaches the buffer — use slice to keep original
     const audioBuf = await audioCtx.decodeAudioData(buf.slice(0));
     const src = audioCtx.createBufferSource();
     src.buffer = audioBuf;
     src.connect(audioCtx.destination);
-    src.onended = () => playNext();
+    src.onended = () => playNext();   // Do NOT close audioCtx here — reuse it
     src.start(0);
   } catch (e) {
     console.error('Audio decode error:', e);
-    playNext();
+    playNext(); // skip broken chunk, try next
   }
 }
 

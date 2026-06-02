@@ -45,11 +45,13 @@ _DEEPGRAM_URL = (
     "&punctuate=true"
     "&smart_format=true"
     "&interim_results=true"
-    "&endpointing=600"
-    "&utterance_end_ms=1500"
+    "&endpointing=300"
+    "&utterance_end_ms=1000"
     "&vad_events=true"
     "&filler_words=false"
 )
+# Deepgram closes connection after ~12s of no audio — send KeepAlive every 8s
+_DG_KEEPALIVE_INTERVAL = 8
 
 
 # ---------------------------------------------------------------------------
@@ -89,9 +91,11 @@ async def handle_voice_session(ws: WebSocket, scenario: str) -> None:
                 _DEEPGRAM_URL,
                 headers={"Authorization": f"Token {dg_key}"},
                 heartbeat=30,
+                timeout=aiohttp.ClientTimeout(total=None, connect=10),
             ) as dg_ws:
                 await asyncio.gather(
                     _forward_audio(ws, dg_ws),
+                    _keepalive_deepgram(dg_ws),
                     _process_transcripts(
                         ws, dg_ws, cm, detector, scope_validator, messages, current_lang
                     ),
@@ -109,7 +113,7 @@ async def handle_voice_session(ws: WebSocket, scenario: str) -> None:
 
 
 async def _forward_audio(ws: WebSocket, dg_ws) -> None:
-    """Stream browser audio chunks → Deepgram."""
+    """Stream browser audio chunks → Deepgram. Runs until browser disconnects."""
     try:
         async for chunk in ws.iter_bytes():
             if dg_ws.closed:
@@ -122,6 +126,18 @@ async def _forward_audio(ws: WebSocket, dg_ws) -> None:
             await dg_ws.send_str(json.dumps({"type": "CloseStream"}))
         except Exception:
             pass
+
+
+async def _keepalive_deepgram(dg_ws) -> None:
+    """Send KeepAlive to Deepgram every 8 s to prevent timeout during bot speech."""
+    try:
+        while not dg_ws.closed:
+            await asyncio.sleep(_DG_KEEPALIVE_INTERVAL)
+            if not dg_ws.closed:
+                await dg_ws.send_str(json.dumps({"type": "KeepAlive"}))
+                logger.debug("Deepgram KeepAlive sent")
+    except Exception:
+        pass
 
 
 async def _process_transcripts(
