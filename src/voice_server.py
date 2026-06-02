@@ -237,23 +237,26 @@ async def _call_llm(messages: List[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# TTS — Sarvam (default) / ElevenLabs / OpenAI
+# TTS — edge-tts (free default) / Sarvam / ElevenLabs / OpenAI
 # ---------------------------------------------------------------------------
 
 async def _tts(text: str, lang: str) -> bytes | None:
-    provider = os.getenv("TTS_PROVIDER", "sarvam").lower()
+    provider = os.getenv("TTS_PROVIDER", "edge").lower()
     try:
         if provider == "elevenlabs":
             return await _tts_elevenlabs(text, lang)
         if provider == "openai":
             return await _tts_openai(text)
-        return await _tts_sarvam(text, lang)
+        if provider == "sarvam":
+            return await _tts_sarvam(text, lang)
+        # default: edge-tts (free, reliable, works for Hindi + English)
+        return await _tts_edge(text, lang)
     except Exception as exc:
-        logger.error("TTS [%s] failed: %s — trying ElevenLabs fallback", provider, exc)
+        logger.error("TTS [%s] failed: %s — trying edge-tts fallback", provider, exc)
         try:
-            return await _tts_elevenlabs(text, lang)
+            return await _tts_edge(text, lang)
         except Exception as exc2:
-            logger.error("ElevenLabs fallback also failed: %s", exc2)
+            logger.error("edge-tts fallback also failed: %s", exc2)
             return None
 
 
@@ -319,3 +322,24 @@ async def _tts_openai(text: str) -> bytes:
         speed=0.95,
     )
     return resp.content
+
+
+async def _tts_edge(text: str, lang: str) -> bytes:
+    """Microsoft Edge TTS — free, no API key, supports Hindi + English."""
+    import io
+    import edge_tts
+
+    # High-quality Indian voices
+    voice = "hi-IN-SwaraNeural" if lang == "hi" else "en-IN-NeerjaNeural"
+    communicate = edge_tts.Communicate(text, voice)
+
+    buf = io.BytesIO()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            buf.write(chunk["data"])
+
+    audio = buf.getvalue()
+    if not audio:
+        raise RuntimeError("edge-tts returned empty audio")
+    logger.info("edge-tts OK: lang=%s voice=%s bytes=%d", lang, voice, len(audio))
+    return audio
