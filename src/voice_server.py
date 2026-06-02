@@ -359,14 +359,15 @@ async def _tts(text: str, lang: str, voice_gender: str = "female") -> bytes | No
             return await _tts_openai(text, voice_gender)
         if provider == "sarvam":
             return await _tts_sarvam(text, lang, voice_gender)
-        # default: edge-tts (free, reliable, works for Hindi + English)
+        # default: edge-tts (free, good quality, gender-aware)
         return await _tts_edge(text, lang, voice_gender)
     except Exception as exc:
-        logger.error("TTS [%s] failed: %s — trying edge-tts fallback", provider, exc)
+        logger.warning("TTS [%s] failed: %s — trying gTTS fallback", provider, exc)
         try:
-            return await _tts_edge(text, lang, voice_gender)
+            # gTTS (Google TTS) — free, no API key, different servers than edge-tts
+            return await _tts_gtts(text, lang)
         except Exception as exc2:
-            logger.error("edge-tts fallback also failed: %s", exc2)
+            logger.error("gTTS fallback also failed: %s", exc2)
             return None
 
 
@@ -451,4 +452,25 @@ async def _tts_edge(text: str, lang: str, voice_gender: str = "female") -> bytes
     if not audio:
         raise RuntimeError("edge-tts returned empty audio")
     logger.info("edge-tts OK: lang=%s voice=%s bytes=%d", lang, voice, len(audio))
+    return audio
+
+
+async def _tts_gtts(text: str, lang: str) -> bytes:
+    """Google TTS — free, no API key, good Hindi + English support."""
+    import io
+    from gtts import gTTS
+
+    lang_code = "hi" if lang == "hi" else "en"
+
+    def _generate() -> bytes:
+        tts = gTTS(text=text, lang=lang_code, slow=False)
+        buf = io.BytesIO()
+        tts.write_to_fp(buf)
+        return buf.getvalue()
+
+    loop = asyncio.get_event_loop()
+    audio = await loop.run_in_executor(None, _generate)
+    if not audio:
+        raise RuntimeError("gTTS returned empty audio")
+    logger.info("gTTS OK: lang=%s bytes=%d", lang_code, len(audio))
     return audio
