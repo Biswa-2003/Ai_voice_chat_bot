@@ -554,7 +554,10 @@ async def _stream_llm_sentences(messages: List[dict]):
             
     except Exception as exc:
         logger.error("LLM stream error: %s", exc)
-        yield "I'm sorry, I had a technical issue. Could you please repeat that?"
+        err_detail = str(exc)
+        if len(err_detail) > 150:
+            err_detail = err_detail[:150] + "..."
+        yield f"I'm sorry, I had a technical issue ({type(exc).__name__}: {err_detail}). Could you please repeat that?"
 
 
 # ---------------------------------------------------------------------------
