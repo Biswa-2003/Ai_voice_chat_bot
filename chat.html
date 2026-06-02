@@ -933,13 +933,16 @@ function setStatus(msg, cls = '') {
 function updateUIState() {
   const orb = document.getElementById('orb');
   const isConnected = ws && ws.readyState === WebSocket.OPEN;
+  const statusEl = document.getElementById('status');
   
   if (!isConnected) {
     orb.className = 'orb idle';
     orb.textContent = '🎙️';
     vizMode = 'idle';
     document.getElementById('vizLabel').textContent = 'frequency';
-    setStatus('Select a scenario and click Connect');
+    if (statusEl.className !== 'err') {
+      setStatus('Select a scenario and click Connect');
+    }
   } else if (muted) {
     orb.className = 'orb idle';
     orb.textContent = '🔇';
