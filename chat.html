@@ -50,6 +50,38 @@
       color: #fff;
     }
 
+    /* ── Voice gender toggle ── */
+    .voice-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .voice-label { font-size: 0.72rem; color: #555; letter-spacing: 0.04em; }
+    .voice-toggle {
+      display: flex;
+      background: #0f0f1e;
+      border: 1px solid #1e1e3a;
+      border-radius: 20px;
+      padding: 3px;
+      gap: 2px;
+    }
+    .voice-btn {
+      padding: 4px 14px;
+      border-radius: 16px;
+      border: none;
+      background: transparent;
+      color: #555;
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: all 0.18s;
+    }
+    .voice-btn.active {
+      background: #312e81;
+      color: #c4b5fd;
+    }
+    .voice-btn:disabled { opacity: 0.4; cursor: default; }
+
     /* ── Orb ── */
     .orb-wrap { display: flex; justify-content: center; }
     .orb {
@@ -184,6 +216,15 @@
     <button class="scenario-btn"        data-s="marketing" onclick="selectScenario(this)">Marketing</button>
   </div>
 
+  <!-- Voice gender selector -->
+  <div class="voice-row">
+    <span class="voice-label">VOICE</span>
+    <div class="voice-toggle">
+      <button class="voice-btn active" id="voiceFemale" onclick="selectVoice('female', this)">♀ Female</button>
+      <button class="voice-btn"        id="voiceMale"   onclick="selectVoice('male',   this)">♂ Male</button>
+    </div>
+  </div>
+
   <div class="orb-wrap"><div class="orb idle" id="orb">🎙️</div></div>
 
   <!-- Frequency visualizer canvas -->
@@ -215,6 +256,7 @@ let isPlayingAudio = false;
 let audioQueue   = [];
 let audioCtx     = null;
 let scenario     = 'presale';
+let voiceGender  = 'female';
 
 // ── Visualizer state ──────────────────────────────────────────────────────────
 let micAnalyser  = null;   // AnalyserNode for mic input
@@ -348,6 +390,14 @@ function selectScenario(btn) {
   btn.classList.add('active');
 }
 
+// ── Voice gender selection ────────────────────────────────────────────────────
+function selectVoice(gender, btn) {
+  if (ws) return;
+  voiceGender = gender;
+  document.querySelectorAll('.voice-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
 // ── Status helpers ────────────────────────────────────────────────────────────
 function setStatus(msg, cls = '') {
   const el = document.getElementById('status');
@@ -396,7 +446,7 @@ async function connect() {
   botAnalyser.smoothingTimeConstant = 0.80;
   botAnalyser.connect(audioCtx.destination);
 
-  ws = new WebSocket(`${SERVER}/ws/${scenario}`);
+  ws = new WebSocket(`${SERVER}/ws/${scenario}?voice=${voiceGender}`);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
@@ -406,6 +456,7 @@ async function connect() {
     document.getElementById('muteBtn').style.display       = 'block';
     document.getElementById('disconnectBtn').style.display = 'block';
     document.querySelectorAll('.scenario-btn').forEach(b => b.disabled = true);
+    document.querySelectorAll('.voice-btn').forEach(b => b.disabled = true);
     startMic();
   };
 
@@ -461,6 +512,7 @@ function onDisconnected() {
   document.getElementById('muteBtn').style.display       = 'none';
   document.getElementById('disconnectBtn').style.display = 'none';
   document.querySelectorAll('.scenario-btn').forEach(b => b.disabled = false);
+  document.querySelectorAll('.voice-btn').forEach(b => b.disabled = false);
 }
 
 function cleanup() {

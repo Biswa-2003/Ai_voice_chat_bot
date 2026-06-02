@@ -12,7 +12,7 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
@@ -55,15 +55,20 @@ async def health():
 
 
 @app.websocket("/ws/{scenario}")
-async def voice_ws(websocket: WebSocket, scenario: str = "presale"):
-    valid = {"presale", "sales", "marketing"}
-    if scenario not in valid:
+async def voice_ws(
+    websocket: WebSocket,
+    scenario: str = "presale",
+    voice: str = Query("female"),
+):
+    valid_scenarios = {"presale", "sales", "marketing"}
+    if scenario not in valid_scenarios:
         scenario = "presale"
+    voice_gender = "male" if voice == "male" else "female"
     await websocket.accept()
-    logger.info("WebSocket connected — scenario=%s", scenario)
+    logger.info("WebSocket connected — scenario=%s voice=%s", scenario, voice_gender)
     try:
         from src.voice_server import handle_voice_session
-        await handle_voice_session(websocket, scenario)
+        await handle_voice_session(websocket, scenario, voice_gender=voice_gender)
     except WebSocketDisconnect:
         pass
     except Exception as exc:

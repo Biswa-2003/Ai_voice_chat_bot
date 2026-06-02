@@ -3,7 +3,7 @@ WebSocket voice pipeline — replaces the LiveKit agent stack.
 
 Flow per connection:
   Browser mic (webm/opus) → WS → Deepgram streaming STT
-  → language detect → scope check → OpenAI LLM → Sarvam/ElevenLabs TTS
+  → language detect → scope check → filler word → OpenAI LLM → TTS
   → audio bytes → WS → Browser speaker
 """
 from __future__ import annotations
@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import random
 from typing import List
 
 import aiohttp
@@ -38,6 +39,13 @@ _GREETINGS = {
     ),
 }
 
+# Short acknowledgement sounds played while the LLM is thinking.
+# These are TTS-synthesised so they match the bot's voice.
+_FILLERS = {
+    "en": ["Hmm...", "I see.", "Right.", "Okay.", "Sure.", "Let me think..."],
+    "hi": ["Hmm...", "Achha.", "Ji haan.", "Theek hai.", "Samjha."],
+}
+
 _DEEPGRAM_URL = (
     "wss://api.deepgram.com/v1/listen"
     "?model=nova-3"
@@ -53,12 +61,32 @@ _DEEPGRAM_URL = (
 # Deepgram closes connection after ~12s of no audio — send KeepAlive every 8s
 _DG_KEEPALIVE_INTERVAL = 8
 
+# Edge-TTS voices by (lang, gender)
+_EDGE_VOICES = {
+    ("en", "female"): "en-IN-NeerjaNeural",
+    ("en", "male"):   "en-IN-PrabhatNeural",
+    ("hi", "female"): "hi-IN-SwaraNeural",
+    ("hi", "male"):   "hi-IN-MadhurNeural",
+}
+
+# Sarvam speakers by (lang, gender)
+_SARVAM_SPEAKERS = {
+    ("en", "female"): "anushka",
+    ("en", "male"):   "amol",
+    ("hi", "female"): "meera",
+    ("hi", "male"):   "arjun",
+}
+
 
 # ---------------------------------------------------------------------------
 # Main session handler — called once per WebSocket connection
 # ---------------------------------------------------------------------------
 
-async def handle_voice_session(ws: WebSocket, scenario: str) -> None:
+async def handle_voice_session(
+    ws: WebSocket,
+    scenario: str,
+    voice_gender: str = "female",
+) -> None:
     cm = ConversationManager(scenario=scenario)
     detector = LanguageDetector()
     scope_validator = ScopeValidator(scenario=scenario)
@@ -71,7 +99,7 @@ async def handle_voice_session(ws: WebSocket, scenario: str) -> None:
     greeting = _GREETINGS.get(current_lang, _GREETINGS["en"])
     cm.add_turn("assistant", greeting, language=current_lang)
     try:
-        greeting_audio = await _tts(greeting, current_lang)
+        greeting_audio = await _tts(greeting, current_lang, voice_gender)
         await ws.send_json({"type": "bot_text", "text": greeting, "lang": current_lang})
         if greeting_audio:
             await ws.send_bytes(greeting_audio)
@@ -97,7 +125,8 @@ async def handle_voice_session(ws: WebSocket, scenario: str) -> None:
                     _forward_audio(ws, dg_ws),
                     _keepalive_deepgram(dg_ws),
                     _process_transcripts(
-                        ws, dg_ws, cm, detector, scope_validator, messages, current_lang
+                        ws, dg_ws, cm, detector, scope_validator,
+                        messages, current_lang, voice_gender,
                     ),
                 )
     except WebSocketDisconnect:
@@ -148,8 +177,9 @@ async def _process_transcripts(
     scope_validator: ScopeValidator,
     messages: List[dict],
     current_lang: str,
+    voice_gender: str,
 ) -> None:
-    """Receive Deepgram transcripts → LLM → TTS → browser."""
+    """Receive Deepgram transcripts → filler → LLM → TTS → browser."""
     async for msg in dg_ws:
         if msg.type != aiohttp.WSMsgType.TEXT:
             continue
@@ -186,7 +216,7 @@ async def _process_transcripts(
                 cm.record_scope_violation(topic or "unknown")
                 reply = scope_validator.get_out_of_scope_reply(detected, topic)
             else:
-                # ── LLM ──────────────────────────────────────────────────
+                # ── LLM (start immediately as background task) ────────────
                 lang_instruction = (
                     "The user is speaking Hindi. You MUST reply ONLY in Hindi (use Hinglish if needed, but respond in Hindi script or Hindi romanization)."
                     if detected == "hi"
@@ -196,7 +226,19 @@ async def _process_transcripts(
                     "role": "user",
                     "content": f"{transcript}\n\n[LANGUAGE INSTRUCTION: {lang_instruction}]"
                 })
-                reply = await _call_llm(messages)
+                llm_task = asyncio.create_task(_call_llm(messages))
+
+                # ── Filler word — plays while LLM thinks ─────────────────
+                filler_text = random.choice(_FILLERS.get(detected, _FILLERS["en"]))
+                try:
+                    filler_audio = await _tts(filler_text, detected, voice_gender)
+                    if filler_audio:
+                        await ws.send_bytes(filler_audio)
+                except Exception as exc:
+                    logger.debug("Filler TTS skipped: %s", exc)
+
+                # ── Wait for LLM ──────────────────────────────────────────
+                reply = await llm_task
                 messages.append({"role": "assistant", "content": reply})
                 # Keep context window manageable: system + last 20 messages
                 if len(messages) > 21:
@@ -210,8 +252,7 @@ async def _process_transcripts(
             # sentence-by-sentence so first audio arrives in ~300ms not 5-6s
             await ws.send_json({"type": "bot_text", "text": reply, "lang": current_lang})
             sentences = _split_sentences(reply)
-            # Kick off first sentence TTS while we continue setup
-            first_task = asyncio.create_task(_tts(sentences[0], current_lang))
+            first_task = asyncio.create_task(_tts(sentences[0], current_lang, voice_gender))
             try:
                 first_audio = await first_task
                 if first_audio:
@@ -220,7 +261,7 @@ async def _process_transcripts(
                 logger.error("TTS sentence 1 error: %s", exc)
             for sentence in sentences[1:]:
                 try:
-                    audio = await _tts(sentence, current_lang)
+                    audio = await _tts(sentence, current_lang, voice_gender)
                     if audio:
                         await ws.send_bytes(audio)
                 except Exception as exc:
@@ -294,32 +335,30 @@ async def _call_llm(messages: List[dict]) -> str:
 # TTS — edge-tts (free default) / Sarvam / ElevenLabs / OpenAI
 # ---------------------------------------------------------------------------
 
-async def _tts(text: str, lang: str) -> bytes | None:
+async def _tts(text: str, lang: str, voice_gender: str = "female") -> bytes | None:
     provider = os.getenv("TTS_PROVIDER", "edge").lower()
     try:
         if provider == "elevenlabs":
             return await _tts_elevenlabs(text, lang)
         if provider == "openai":
-            return await _tts_openai(text)
+            return await _tts_openai(text, voice_gender)
         if provider == "sarvam":
-            return await _tts_sarvam(text, lang)
+            return await _tts_sarvam(text, lang, voice_gender)
         # default: edge-tts (free, reliable, works for Hindi + English)
-        return await _tts_edge(text, lang)
+        return await _tts_edge(text, lang, voice_gender)
     except Exception as exc:
         logger.error("TTS [%s] failed: %s — trying edge-tts fallback", provider, exc)
         try:
-            return await _tts_edge(text, lang)
+            return await _tts_edge(text, lang, voice_gender)
         except Exception as exc2:
             logger.error("edge-tts fallback also failed: %s", exc2)
             return None
 
 
-async def _tts_sarvam(text: str, lang: str) -> bytes:
+async def _tts_sarvam(text: str, lang: str, voice_gender: str = "female") -> bytes:
     api_key = os.getenv("SARVAM_API_KEY", "")
     lang_code = "hi-IN" if lang == "hi" else "en-IN"
-    hi_speaker = os.getenv("SARVAM_HI_SPEAKER", "meera")
-    en_speaker = os.getenv("SARVAM_EN_SPEAKER", "anushka")
-    speaker = hi_speaker if lang == "hi" else en_speaker
+    speaker = _SARVAM_SPEAKERS.get((lang, voice_gender), "anushka")
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -366,25 +405,26 @@ async def _tts_elevenlabs(text: str, lang: str) -> bytes:
             return await resp.read()
 
 
-async def _tts_openai(text: str) -> bytes:
+async def _tts_openai(text: str, voice_gender: str = "female") -> bytes:
     import openai
     client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+    # shimmer/nova = female, echo/onyx = male
+    voice = "shimmer" if voice_gender == "female" else "echo"
     resp = await client.audio.speech.create(
         model="gpt-4o-mini-tts",
-        voice="shimmer",
+        voice=voice,
         input=text,
         speed=0.95,
     )
     return resp.content
 
 
-async def _tts_edge(text: str, lang: str) -> bytes:
+async def _tts_edge(text: str, lang: str, voice_gender: str = "female") -> bytes:
     """Microsoft Edge TTS — free, no API key, supports Hindi + English."""
     import io
     import edge_tts
 
-    # High-quality Indian voices
-    voice = "hi-IN-SwaraNeural" if lang == "hi" else "en-IN-NeerjaNeural"
+    voice = _EDGE_VOICES.get((lang, voice_gender), "en-IN-NeerjaNeural")
     communicate = edge_tts.Communicate(text, voice)
 
     buf = io.BytesIO()
