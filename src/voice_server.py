@@ -205,14 +205,26 @@ async def _process_transcripts(
             cm.add_turn("assistant", reply, language=current_lang)
             logger.info("Bot  [%s]: %s", current_lang, reply)
 
-            # ── TTS ───────────────────────────────────────────────────────
+            # ── Streaming TTS (sentence by sentence) ──────────────────────
+            # Send text immediately so user sees it, then stream audio
+            # sentence-by-sentence so first audio arrives in ~300ms not 5-6s
             await ws.send_json({"type": "bot_text", "text": reply, "lang": current_lang})
+            sentences = _split_sentences(reply)
+            # Kick off first sentence TTS while we continue setup
+            first_task = asyncio.create_task(_tts(sentences[0], current_lang))
             try:
-                audio = await _tts(reply, current_lang)
-                if audio:
-                    await ws.send_bytes(audio)
+                first_audio = await first_task
+                if first_audio:
+                    await ws.send_bytes(first_audio)
             except Exception as exc:
-                logger.error("TTS error: %s", exc)
+                logger.error("TTS sentence 1 error: %s", exc)
+            for sentence in sentences[1:]:
+                try:
+                    audio = await _tts(sentence, current_lang)
+                    if audio:
+                        await ws.send_bytes(audio)
+                except Exception as exc:
+                    logger.error("TTS sentence error: %s", exc)
 
         elif msg_type == "Metadata":
             logger.debug("Deepgram metadata: %s", data)
@@ -220,6 +232,32 @@ async def _process_transcripts(
         elif msg_type == "Error":
             logger.error("Deepgram error: %s", data)
             await ws.send_json({"type": "error", "text": "STT error. Please try again."})
+
+
+# ---------------------------------------------------------------------------
+# Sentence splitter for streaming TTS
+# ---------------------------------------------------------------------------
+
+def _split_sentences(text: str) -> list[str]:
+    """Split reply into short speakable sentences for low-latency TTS streaming."""
+    import re
+    # Split on Hindi danda, or English sentence-ending punctuation
+    parts = re.split(r'(?<=[।.!?])\s+', text.strip())
+    result = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        # If still too long (>120 chars), split on comma/semicolon
+        if len(part) > 120:
+            sub = re.split(r'[,;]\s+', part)
+            for s in sub:
+                s = s.strip()
+                if s:
+                    result.append(s)
+        else:
+            result.append(part)
+    return result if result else [text.strip()]
 
 
 # ---------------------------------------------------------------------------
