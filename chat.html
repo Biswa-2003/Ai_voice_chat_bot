@@ -206,7 +206,7 @@
 <body>
 <div class="container">
   <div class="header">
-    <h1>Priya — AI Voicebot</h1>
+    <h1 id="botTitle">Priya — AI Voicebot</h1>
     <p>Presale · Sales · Marketing &nbsp;|&nbsp; English &amp; Hindi</p>
   </div>
 
@@ -257,6 +257,7 @@ let audioQueue   = [];
 let audioCtx     = null;
 let scenario     = 'presale';
 let voiceGender  = 'female';
+let botName      = 'Priya';
 
 // ── Visualizer state ──────────────────────────────────────────────────────────
 let micAnalyser  = null;   // AnalyserNode for mic input
@@ -394,8 +395,10 @@ function selectScenario(btn) {
 function selectVoice(gender, btn) {
   if (ws) return;
   voiceGender = gender;
+  botName = gender === 'male' ? 'Aryan' : 'Priya';
   document.querySelectorAll('.voice-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
+  document.getElementById('botTitle').textContent = `${botName} — AI Voicebot`;
 }
 
 // ── Status helpers ────────────────────────────────────────────────────────────
@@ -529,13 +532,16 @@ function cleanup() {
 
 // ── Message handler ───────────────────────────────────────────────────────────
 function handleMessage(msg) {
-  if (msg.type === 'user_text') {
+  if (msg.type === 'bot_info') {
+    botName = msg.name;
+    document.getElementById('botTitle').textContent = `${botName} — AI Voicebot`;
+  } else if (msg.type === 'user_text') {
     addBubble('user', msg.text, msg.lang);
     if (!botSpeaking) { setOrb('listening'); setStatus('Listening…', 'on'); }
   } else if (msg.type === 'bot_text') {
     addBubble('bot', msg.text, msg.lang);
     setOrb('speaking');
-    setStatus('Priya is speaking…', 'on');
+    setStatus(`${botName} is speaking…`, 'on');
   } else if (msg.type === 'error') {
     setStatus(msg.text, 'err');
   }
@@ -596,7 +602,7 @@ function addBubble(role, text, lang) {
 
   const meta = document.createElement('div');
   meta.className = 'bubble-meta';
-  meta.textContent = role === 'user' ? 'You' : 'Priya';
+  meta.textContent = role === 'user' ? 'You' : botName;
 
   wrap.appendChild(inner);
   wrap.appendChild(meta);

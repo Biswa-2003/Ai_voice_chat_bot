@@ -27,13 +27,23 @@ from src.scope_validator import ScopeValidator
 logger = logging.getLogger("voice_server")
 
 _GREETINGS = {
-    "en": (
+    ("en", "female"): (
         "Namaste and welcome! I'm Priya, your AI assistant. "
         "I'm here to help you today. "
         "You can speak in English or Hindi — whichever is comfortable for you."
     ),
-    "hi": (
+    ("en", "male"): (
+        "Namaste and welcome! I'm Aryan, your AI assistant. "
+        "I'm here to help you today. "
+        "You can speak in English or Hindi — whichever is comfortable for you."
+    ),
+    ("hi", "female"): (
         "Namaste aur swaagat hai! Main Priya hoon, aapki AI assistant. "
+        "Aap Hindi ya English mein baat kar sakte hain — "
+        "jo bhi aapko comfortable lage."
+    ),
+    ("hi", "male"): (
+        "Namaste aur swaagat hai! Main Aryan hoon, aapka AI assistant. "
         "Aap Hindi ya English mein baat kar sakte hain — "
         "jo bhi aapko comfortable lage."
     ),
@@ -95,8 +105,13 @@ async def handle_voice_session(
     messages: List[dict] = [{"role": "system", "content": system_prompt}]
     current_lang = os.getenv("DEFAULT_LANGUAGE", "en")
 
+    # ── Send bot identity so browser can display correct name ─────────────
+    bot_name = "Aryan" if voice_gender == "male" else "Priya"
+    await ws.send_json({"type": "bot_info", "name": bot_name, "gender": voice_gender})
+
     # ── Send greeting ──────────────────────────────────────────────────────
-    greeting = _GREETINGS.get(current_lang, _GREETINGS["en"])
+    greeting = _GREETINGS.get((current_lang, voice_gender),
+                               _GREETINGS[("en", voice_gender)])
     cm.add_turn("assistant", greeting, language=current_lang)
     try:
         greeting_audio = await _tts(greeting, current_lang, voice_gender)
